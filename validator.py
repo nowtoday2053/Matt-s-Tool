@@ -9,12 +9,40 @@ import time
 import os
 import logging
 import subprocess
+import platform
 from selenium.common.exceptions import WebDriverException
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class PhoneValidator:
+    def _get_chrome_binary_location(self):
+        """Get the Chrome binary location based on the operating system"""
+        system = platform.system().lower()
+        if system == "windows":
+            # Common Chrome installation paths on Windows
+            possible_paths = [
+                os.path.expandvars("%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"),
+                os.path.expandvars("%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"),
+                os.path.expandvars("%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe")
+            ]
+        else:
+            # Linux paths
+            possible_paths = [
+                '/usr/bin/google-chrome',
+                '/usr/bin/chromium-browser',
+                '/usr/bin/chromium',
+                '/snap/bin/chromium'
+            ]
+
+        for path in possible_paths:
+            if os.path.exists(path):
+                logger.info(f"Found Chrome binary at: {path}")
+                return path
+
+        logger.error("Chrome binary not found in common locations")
+        return None
+
     def _ensure_chromedriver(self):
         """Ensure ChromeDriver is available and executable"""
         try:
@@ -24,11 +52,20 @@ class PhoneValidator:
                 if not os.path.exists(chromedriver_path):
                     logger.error(f"ChromeDriver not found at {chromedriver_path}")
                     # Try to find ChromeDriver in other locations
-                    possible_paths = [
-                        '/usr/bin/chromedriver',
-                        '/usr/local/bin/chromedriver',
-                        '/snap/bin/chromedriver'
-                    ]
+                    system = platform.system().lower()
+                    if system == "windows":
+                        possible_paths = [
+                            os.path.join(os.getcwd(), 'chromedriver.exe'),
+                            os.path.expandvars("%ProgramFiles%\\chromedriver.exe"),
+                            os.path.expandvars("%ProgramFiles(x86)%\\chromedriver.exe")
+                        ]
+                    else:
+                        possible_paths = [
+                            '/usr/bin/chromedriver',
+                            '/usr/local/bin/chromedriver',
+                            '/snap/bin/chromedriver'
+                        ]
+                    
                     for path in possible_paths:
                         if os.path.exists(path):
                             chromedriver_path = path
@@ -37,14 +74,16 @@ class PhoneValidator:
                 
                 # Make sure ChromeDriver is executable
                 try:
-                    os.chmod(chromedriver_path, 0o755)
-                    logger.info("Set ChromeDriver permissions")
+                    if platform.system().lower() != "windows":
+                        os.chmod(chromedriver_path, 0o755)
+                        logger.info("Set ChromeDriver permissions")
                 except Exception as e:
                     logger.error(f"Failed to set ChromeDriver permissions: {e}")
                 
                 # Try to get ChromeDriver version
                 try:
-                    version = subprocess.check_output([chromedriver_path, '--version']).decode()
+                    cmd = [chromedriver_path, '--version']
+                    version = subprocess.check_output(cmd).decode()
                     logger.info(f"ChromeDriver version: {version}")
                 except Exception as e:
                     logger.error(f"Failed to get ChromeDriver version: {e}")
@@ -80,9 +119,11 @@ class PhoneValidator:
                     raise Exception("Could not locate ChromeDriver")
                 
                 # Set Chrome binary location
-                chrome_binary = os.environ.get('CHROME_BINARY_PATH', '/usr/bin/chromium-browser')
-                if not os.path.exists(chrome_binary):
-                    raise Exception(f"Chrome binary not found at {chrome_binary}")
+                chrome_binary = os.environ.get('CHROME_BINARY_PATH')
+                if not chrome_binary or not os.path.exists(chrome_binary):
+                    chrome_binary = self._get_chrome_binary_location()
+                    if not chrome_binary:
+                        raise Exception("Could not locate Chrome binary")
                 
                 chrome_options.binary_location = chrome_binary
                 service = Service(executable_path=chromedriver_path)
