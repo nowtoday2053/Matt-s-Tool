@@ -16,12 +16,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
-from phone_validator import PhoneValidator
 import threading
 import json
 from datetime import datetime
-import boto3
-from botocore.exceptions import ClientError
 from validator import PhoneValidator
 
 app = Flask(__name__)
