@@ -4,7 +4,9 @@ import random
 import pandas as pd
 from flask import Flask, request, render_template, send_file, flash, redirect, url_for, jsonify
 from werkzeug.utils import secure_filename
-import undetected_chromedriver as uc
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
@@ -12,9 +14,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from tqdm import tqdm
 import logging
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
 import threading
 import json
@@ -48,85 +47,47 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def setup_driver():
-    """Setup undetected Chrome driver in headless mode with error handling"""
-    def create_options():
-        """Create fresh ChromeOptions object"""
-        options = uc.ChromeOptions()
-        # Removed --headless to make browser visible
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--start-maximized')
-        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        return options
+    """Setup Chrome driver in headless mode with error handling"""
+    chrome_options = Options()
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('--disable-extensions')
+    chrome_options.add_argument('--disable-setuid-sandbox')
+    chrome_options.add_argument('--disable-infobars')
+    chrome_options.add_argument('--disable-notifications')
+    chrome_options.add_argument('--ignore-certificate-errors')
+    chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
     try:
-        # Try to create driver with automatic version detection
-        options = create_options()
-        driver = uc.Chrome(options=options, version_main=None)
+        if os.environ.get('RAILWAY_ENVIRONMENT'):
+            service = Service('/usr/bin/chromedriver')
+            chrome_options.binary_location = '/usr/bin/chromium-browser'
+        else:
+            service = Service()
+        
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         return driver
     except Exception as e:
-        logger.error(f"Failed to create driver with auto version: {e}")
-        try:
-            # Fallback 1: try with specific Chrome version 137
-            options = create_options()
-            driver = uc.Chrome(options=options, version_main=137)
-            return driver
-        except Exception as e2:
-            logger.error(f"Failed with Chrome 137: {e2}")
-            try:
-                # Fallback 2: try with Chrome version 138
-                options = create_options()
-                driver = uc.Chrome(options=options, version_main=138)
-                return driver
-            except Exception as e3:
-                logger.error(f"Failed with Chrome 138: {e3}")
-                try:
-                    # Final fallback: try without any version specification
-                    options = create_options()
-                    driver = uc.Chrome(options=options)
-                    return driver
-                except Exception as e4:
-                    logger.error(f"All driver creation attempts failed: {e4}")
-                    raise Exception(f"Could not create Chrome driver. Please update Chrome browser to the latest version or try again. Error: {e4}")
+        logger.error(f"Failed to create driver: {e}")
+        raise e
 
 def get_carrier_info(phone_number, driver):
     """Get carrier information for a phone number using phonevalidator.com"""
     try:
-        print(f"\n🔍 Checking phone number: {phone_number}")
+        logger.info(f"Checking phone number: {phone_number}")
         
         # Navigate to the website
-        print("📱 Opening phonevalidator.com...")
         driver.get("https://www.phonevalidator.com/")
-        
-        # Wait for the page to load and find the input field
         wait = WebDriverWait(driver, 20)
         
         # Wait for page to fully load
         time.sleep(3)
         
-        print("⌨️  Finding input field...")
-        
-        # First, let's debug what's actually on the page
-        print("🔍 Debugging page content...")
-        page_source = driver.page_source
-        
-        # Look for input tags in the source
-        import re
-        input_tags = re.findall(r'<input[^>]*>', page_source, re.IGNORECASE)
-        print(f"📄 Found {len(input_tags)} input tags:")
-        for i, tag in enumerate(input_tags[:5]):  # Show first 5
-            print(f"  {i+1}: {tag}")
-        
-        # Look for any element with placeholder containing '555'
-        if '555' in page_source:
-            print("✅ Found '555' in page source")
-        else:
-            print("❌ '555' not found in page source")
-            
-        # Try multiple selectors to find the phone number input field
-        phone_input = None
+        # Try multiple selectors to find the input field
+        input_field = None
         input_selectors = [
             (By.ID, "phone"),
             (By.NAME, "phone"),
@@ -136,36 +97,31 @@ def get_carrier_info(phone_number, driver):
             (By.CSS_SELECTOR, "input"),
             (By.XPATH, "//input[contains(@placeholder, '555')]"),
             (By.XPATH, "//input[contains(@placeholder, 'phone')]"),
-            (By.XPATH, "//input[contains(@placeholder, '123')]"),
             (By.XPATH, "//input[contains(@class, 'form')]"),
             (By.CSS_SELECTOR, "input.form-control"),
             (By.CSS_SELECTOR, ".form-control"),
         ]
         
-        for selector_type, selector_value in input_selectors:
+        for selector_type, selector in input_selectors:
             try:
-                # Try with a shorter wait for each selector
-                short_wait = WebDriverWait(driver, 3)
-                phone_input = short_wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
-                print(f"✅ Found input field using: {selector_type} = {selector_value}")
-                break
-            except TimeoutException:
-                print(f"❌ Failed with selector: {selector_type} = {selector_value}")
+                input_field = wait.until(EC.element_to_be_clickable((selector_type, selector)))
+                if input_field.is_displayed() and input_field.is_enabled():
+                    logger.info(f"Found input field using: {selector_type} = {selector}")
+                    break
+            except:
                 continue
         
-        if phone_input is None:
-            print("❌ Could not find input field with any selector")
-            return "Input Not Found"
+        if not input_field:
+            raise Exception("Could not find input field")
         
         # Clear and enter the phone number
-        phone_input.clear()
+        input_field.clear()
         time.sleep(1)
-        phone_input.send_keys(phone_number)
-        print(f"✅ Entered phone number: {phone_number}")
+        input_field.send_keys(phone_number)
+        logger.info(f"Entered phone number: {phone_number}")
         time.sleep(2)
         
         # Find and click the submit button
-        print("🔄 Looking for submit button...")
         submit_button = None
         button_selectors = [
             (By.XPATH, "//button[@type='submit']"),
@@ -178,26 +134,24 @@ def get_carrier_info(phone_number, driver):
             (By.XPATH, "//input[@value='Submit']"),
         ]
         
-        for selector_type, selector_value in button_selectors:
+        for selector_type, selector in button_selectors:
             try:
-                submit_button = driver.find_element(selector_type, selector_value)
-                print(f"✅ Found submit button using: {selector_type} = {selector_value}")
-                break
-            except NoSuchElementException:
-                print(f"❌ Failed with button selector: {selector_type} = {selector_value}")
+                submit_button = wait.until(EC.element_to_be_clickable((selector_type, selector)))
+                if submit_button.is_displayed() and submit_button.is_enabled():
+                    logger.info(f"Found submit button using: {selector_type} = {selector}")
+                    break
+            except:
                 continue
         
         if submit_button:
             submit_button.click()
-            print("✅ Clicked submit button")
+            logger.info("Clicked submit button")
         else:
             # Try pressing Enter on the input field
-            print("🔄 Trying to press Enter on input field...")
-            phone_input.send_keys(Keys.ENTER)
-            print("✅ Pressed Enter")
+            input_field.send_keys(Keys.ENTER)
+            logger.info("Pressed Enter on input field")
         
         # Wait for results to load
-        print("⏳ Waiting for results...")
         time.sleep(5)
         
         # Try to find carrier information in various possible locations
@@ -215,43 +169,36 @@ def get_carrier_info(phone_number, driver):
             "//div[contains(@class, 'result')]//text()[contains(., 'Carrier')]",
         ]
         
-        print("🔎 Searching for carrier information...")
         for selector in possible_selectors:
             try:
                 carrier_element = driver.find_element(By.XPATH, selector)
                 if carrier_element.text.strip():
                     carrier = carrier_element.text.strip()
-                    print(f"✅ Found carrier: {carrier}")
+                    logger.info(f"Found carrier: {carrier}")
                     break
-            except NoSuchElementException:
+            except:
                 continue
         
         # If still unknown, try to find any text that might contain carrier names
         if carrier == "Unknown":
-            print("🔍 Searching page content for carrier names...")
             try:
                 page_text = driver.page_source.lower()
                 carriers = ['verizon', 'at&t', 'att', 't-mobile', 'tmobile', 'sprint', 'boost', 'cricket', 'metro', 'straight talk', 'tracfone', 'mint mobile']
                 for c in carriers:
                     if c in page_text:
                         carrier = c.title()
-                        print(f"✅ Found carrier in text: {carrier}")
+                        logger.info(f"Found carrier in text: {carrier}")
                         break
             except:
                 pass
         
-        if carrier == "Unknown":
-            print("❓ Carrier not found")
-        
-        logger.info(f"Phone: {phone_number}, Carrier: {carrier}")
+        logger.info(f"Final result - Phone: {phone_number}, Carrier: {carrier}")
         return carrier
         
     except TimeoutException:
-        print(f"⏰ Timeout for phone number: {phone_number}")
         logger.error(f"Timeout for phone number: {phone_number}")
         return "Timeout"
     except Exception as e:
-        print(f"❌ Error processing {phone_number}: {str(e)}")
         logger.error(f"Error processing {phone_number}: {str(e)}")
         return "Error"
 
