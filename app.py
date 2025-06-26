@@ -16,6 +16,12 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
+from phone_validator import PhoneValidator
+import threading
+import json
+from datetime import datetime
+import boto3
+from botocore.exceptions import ClientError
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'  # Change this in production
@@ -36,6 +42,9 @@ os.makedirs(RESULTS_FOLDER, exist_ok=True)
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Store jobs in memory (in production, use a proper database)
+jobs = {}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -324,122 +333,114 @@ def process_phone_numbers(file_path):
         logger.error(f"Error processing file: {str(e)}")
         raise e
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/')
 def index():
-    if request.method == 'POST':
-        phone_number = request.form.get('phone_number')
-        if phone_number:
-            success = validate_phone_number(phone_number)
-            return render_template('index.html', message="Phone number validated successfully" if success else "Failed to validate phone number")
     return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
-        flash('No file selected')
-        return redirect(request.url)
+        return jsonify({'error': 'No file part'}), 400
     
     file = request.files['file']
-    
     if file.filename == '':
-        flash('No file selected')
-        return redirect(request.url)
+        return jsonify({'error': 'No selected file'}), 400
     
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
-        
-        try:
-            # Process the file
-            flash('File uploaded successfully! Processing phone numbers...')
-            output_path, count = process_phone_numbers(file_path)
-            
-            # Clean up uploaded file
-            os.remove(file_path)
-            
-            flash(f'Successfully processed {count} phone numbers!')
-            return send_file(output_path, as_attachment=True, download_name='carrier_results.csv')
-            
-        except ValueError as e:
-            flash(f'Error: {str(e)}')
-            return redirect(url_for('index'))
-        except Exception as e:
-            flash(f'An error occurred while processing the file: {str(e)}')
-            return redirect(url_for('index'))
-    else:
-        flash('Invalid file type. Please upload a CSV or Excel file.')
-        return redirect(url_for('index'))
+    if not file.filename.endswith(('.csv', '.xlsx', '.xls')):
+        return jsonify({'error': 'Invalid file type. Please upload CSV or Excel file.'}), 400
+    
+    # Generate unique job ID
+    job_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{job_id}_{filename}")
+    file.save(file_path)
+    
+    # Initialize job status
+    jobs[job_id] = {
+        'status': 'processing',
+        'progress': 0,
+        'results': [],
+        'file_path': file_path
+    }
+    
+    # Start processing in background
+    thread = threading.Thread(target=process_file, args=(job_id, file_path))
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        'job_id': job_id,
+        'message': 'File uploaded successfully. Processing started.'
+    })
 
-@app.route('/download')
-def download_results():
-    output_path = os.path.join(RESULTS_FOLDER, 'output.csv')
-    if os.path.exists(output_path):
-        return send_file(output_path, as_attachment=True, download_name='carrier_results.csv')
-    else:
-        flash('No results file found. Please process a file first.')
-        return redirect(url_for('index'))
+@app.route('/status/<job_id>')
+def get_status(job_id):
+    if job_id not in jobs:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    return jsonify(jobs[job_id])
 
-def validate_phone_number(phone_number):
+@app.route('/download/<job_id>')
+def download_results(job_id):
+    if job_id not in jobs:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    if jobs[job_id]['status'] != 'completed':
+        return jsonify({'error': 'Results not ready'}), 400
+    
+    # Create results CSV
+    results_file = os.path.join(app.config['RESULTS_FOLDER'], f"results_{job_id}.csv")
+    df = pd.DataFrame(jobs[job_id]['results'])
+    df.to_csv(results_file, index=False)
+    
+    return send_file(
+        results_file,
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=f'phone_validation_results_{job_id}.csv'
+    )
+
+def process_file(job_id, file_path):
     try:
-        # Configure Chrome options
-        chrome_options = uc.ChromeOptions()
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--start-maximized')
+        # Read the input file
+        if file_path.endswith('.csv'):
+            df = pd.read_csv(file_path)
+        else:
+            df = pd.read_excel(file_path)
         
-        # Create driver with version-specific settings
-        driver = uc.Chrome(
-            options=chrome_options,
-            version_main=137
-        )
+        phone_numbers = df.iloc[:, 0].astype(str).tolist()
+        total = len(phone_numbers)
         
-        try:
-            # Navigate to the website
-            driver.get("https://www.phonevalidator.com/")
+        # Initialize validator
+        validator = PhoneValidator()
+        
+        # Process each number
+        for i, phone in enumerate(phone_numbers):
+            try:
+                result = validator.validate_single_number(phone)
+                jobs[job_id]['results'].append(result)
+            except Exception as e:
+                jobs[job_id]['results'].append({
+                    'phone': phone,
+                    'error': str(e)
+                })
             
-            # Wait longer for the page to fully load
-            time.sleep(5)
-            
-            # Wait for any input field to be present and visible
-            wait = WebDriverWait(driver, 10)
-            input_field = wait.until(
-                EC.presence_of_element_located((By.TAG_NAME, "input"))
-            )
-            
-            # Use JavaScript to modify the input field directly
-            js_script = f"""
-                var inputs = document.getElementsByTagName('input');
-                for (var i = 0; i < inputs.length; i++) {{
-                    if (inputs[i].placeholder && inputs[i].placeholder.includes('555-123')) {{
-                        inputs[i].value = '{phone_number}';
-                        inputs[i].dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        inputs[i].dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        return true;
-                    }}
-                }}
-                return false;
-            """
-            
-            # Execute the JavaScript
-            success = driver.execute_script(js_script)
-            
-            if success:
-                print(f"Successfully entered phone number: {phone_number}")
-            else:
-                print("Could not find the input field")
-            
-            # Keep the browser window open for viewing
-            time.sleep(30)
-            
-            return success
-            
-        finally:
-            driver.quit()
-            
+            # Update progress
+            jobs[job_id]['progress'] = int((i + 1) / total * 100)
+        
+        jobs[job_id]['status'] = 'completed'
+        
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        return False
+        jobs[job_id]['status'] = 'failed'
+        jobs[job_id]['error'] = str(e)
+    
+    finally:
+        # Cleanup
+        try:
+            os.remove(file_path)
+        except:
+            pass
 
 if __name__ == '__main__':
     print("Starting Phone Validator Tool...")
-    app.run(debug=True) 
+    app.run(host='0.0.0.0', port=5000, debug=True) 
