@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phone Validator Tool</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        input[type="tel"] {
+            padding: 8px;
+            font-size: 16px;
+            width: 200px;
+        }
+        button {
+            padding: 8px 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        .message {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>Phone Validator Tool</h1>
+    
+    <form method="POST">
+        <div class="form-group">
+            <label for="phone_number">Enter Phone Number:</label><br>
+            <input type="tel" id="phone_number" name="phone_number" 
+                   pattern="[0-9]{10}" 
+                   placeholder="Enter 10-digit phone number"
+                   required>
+        </div>
+        <button type="submit">Validate</button>
+    </form>
+
+    {% if message %}
+    <div class="message {% if 'successfully' in message %}success{% else %}error{% endif %}">
+        {{ message }}
+    </div>
+    {% endif %}
+</body>
+</html> 
