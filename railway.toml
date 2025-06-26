@@ -25,9 +25,16 @@ aptPkgs = [
 [phases.build]
 cmds = [
     "ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome",
-    "chmod +x /usr/bin/chromedriver"
+    "ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver",
+    "chmod +x /usr/bin/chromedriver",
+    "chmod +x /usr/bin/chromium-browser",
+    "chmod +x /usr/local/bin/chromedriver",
+    "which chromedriver",
+    "chromedriver --version"
 ]
 
 [variables]
 RAILWAY_ENVIRONMENT = "true"
-PYTHONUNBUFFERED = "1" 
+PYTHONUNBUFFERED = "1"
+CHROME_DRIVER_PATH = "/usr/local/bin/chromedriver"
+CHROME_BINARY_PATH = "/usr/bin/chromium-browser" 
