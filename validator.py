@@ -16,18 +16,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class PhoneValidator:
+    def _setup_xvfb(self):
+        """Set up Xvfb for headless operation in Linux"""
+        if platform.system().lower() != "windows" and os.environ.get('RAILWAY_ENVIRONMENT'):
+            try:
+                # Start Xvfb
+                subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24', '-ac'])
+                logger.info("Started Xvfb display")
+                time.sleep(1)  # Give Xvfb time to start
+            except Exception as e:
+                logger.error(f"Failed to start Xvfb: {e}")
+
     def _get_chrome_binary_location(self):
         """Get the Chrome binary location based on the operating system"""
+        # First check environment variable
+        chrome_binary = os.environ.get('CHROME_BINARY_PATH')
+        if chrome_binary and os.path.exists(chrome_binary):
+            logger.info(f"Using Chrome binary from environment: {chrome_binary}")
+            return chrome_binary
+
         system = platform.system().lower()
         if system == "windows":
-            # Common Chrome installation paths on Windows
             possible_paths = [
                 os.path.expandvars("%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"),
                 os.path.expandvars("%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"),
                 os.path.expandvars("%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe")
             ]
         else:
-            # Linux paths
             possible_paths = [
                 '/usr/bin/google-chrome',
                 '/usr/bin/chromium-browser',
@@ -46,56 +61,43 @@ class PhoneValidator:
     def _ensure_chromedriver(self):
         """Ensure ChromeDriver is available and executable"""
         try:
-            if os.environ.get('RAILWAY_ENVIRONMENT'):
-                # Check if ChromeDriver is in the expected location
-                chromedriver_path = os.environ.get('CHROME_DRIVER_PATH', '/usr/local/bin/chromedriver')
-                if not os.path.exists(chromedriver_path):
-                    logger.error(f"ChromeDriver not found at {chromedriver_path}")
-                    # Try to find ChromeDriver in other locations
-                    system = platform.system().lower()
-                    if system == "windows":
-                        possible_paths = [
-                            os.path.join(os.getcwd(), 'chromedriver.exe'),
-                            os.path.expandvars("%ProgramFiles%\\chromedriver.exe"),
-                            os.path.expandvars("%ProgramFiles(x86)%\\chromedriver.exe")
-                        ]
-                    else:
-                        possible_paths = [
-                            '/usr/bin/chromedriver',
-                            '/usr/local/bin/chromedriver',
-                            '/snap/bin/chromedriver'
-                        ]
-                    
-                    for path in possible_paths:
-                        if os.path.exists(path):
-                            chromedriver_path = path
-                            logger.info(f"Found ChromeDriver at {path}")
-                            break
-                
-                # Make sure ChromeDriver is executable
-                try:
-                    if platform.system().lower() != "windows":
-                        os.chmod(chromedriver_path, 0o755)
-                        logger.info("Set ChromeDriver permissions")
-                except Exception as e:
-                    logger.error(f"Failed to set ChromeDriver permissions: {e}")
-                
-                # Try to get ChromeDriver version
-                try:
-                    cmd = [chromedriver_path, '--version']
-                    version = subprocess.check_output(cmd).decode()
-                    logger.info(f"ChromeDriver version: {version}")
-                except Exception as e:
-                    logger.error(f"Failed to get ChromeDriver version: {e}")
-                
+            # First check environment variable
+            chromedriver_path = os.environ.get('CHROME_DRIVER_PATH')
+            if chromedriver_path and os.path.exists(chromedriver_path):
+                logger.info(f"Using ChromeDriver from environment: {chromedriver_path}")
                 return chromedriver_path
+
+            system = platform.system().lower()
+            if system == "windows":
+                possible_paths = [
+                    os.path.join(os.getcwd(), 'chromedriver.exe'),
+                    os.path.expandvars("%ProgramFiles%\\chromedriver.exe"),
+                    os.path.expandvars("%ProgramFiles(x86)%\\chromedriver.exe")
+                ]
+            else:
+                possible_paths = [
+                    '/usr/local/bin/chromedriver',
+                    '/usr/bin/chromedriver',
+                    '/snap/bin/chromedriver'
+                ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found ChromeDriver at {path}")
+                    return path
+
+            logger.error("ChromeDriver not found in any location")
             return None
+
         except Exception as e:
             logger.error(f"Error in _ensure_chromedriver: {e}")
             return None
 
     def validate_single_number(self, phone):
         """Validate a single phone number"""
+        # Set up Xvfb if needed
+        self._setup_xvfb()
+
         # Configure Chrome options
         chrome_options = Options()
         chrome_options.add_argument('--no-sandbox')
@@ -110,26 +112,26 @@ class PhoneValidator:
         chrome_options.add_argument('--ignore-certificate-errors')
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
+        if os.environ.get('RAILWAY_ENVIRONMENT'):
+            chrome_options.add_argument('--disable-software-rasterizer')
+            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+            chrome_options.add_argument('--single-process')
+            
         driver = None
         try:
-            if os.environ.get('RAILWAY_ENVIRONMENT'):
-                # Get ChromeDriver path
-                chromedriver_path = self._ensure_chromedriver()
-                if not chromedriver_path:
-                    raise Exception("Could not locate ChromeDriver")
-                
-                # Set Chrome binary location
-                chrome_binary = os.environ.get('CHROME_BINARY_PATH')
-                if not chrome_binary or not os.path.exists(chrome_binary):
-                    chrome_binary = self._get_chrome_binary_location()
-                    if not chrome_binary:
-                        raise Exception("Could not locate Chrome binary")
-                
-                chrome_options.binary_location = chrome_binary
-                service = Service(executable_path=chromedriver_path)
-                logger.info(f"Initializing Chrome with driver at {chromedriver_path} and binary at {chrome_binary}")
-            else:
-                service = Service()
+            # Get Chrome binary location
+            chrome_binary = self._get_chrome_binary_location()
+            if not chrome_binary:
+                raise Exception("Could not locate Chrome binary")
+            chrome_options.binary_location = chrome_binary
+            
+            # Get ChromeDriver path
+            chromedriver_path = self._ensure_chromedriver()
+            if not chromedriver_path:
+                raise Exception("Could not locate ChromeDriver")
+            
+            service = Service(executable_path=chromedriver_path)
+            logger.info(f"Initializing Chrome with driver at {chromedriver_path} and binary at {chrome_binary}")
             
             # Create driver with explicit wait for initialization
             max_retries = 3

@@ -10,6 +10,8 @@ numReplicas = 1
 
 [phases.setup]
 aptPkgs = [
+    "wget",
+    "unzip",
     "chromium-browser",
     "chromium-chromedriver",
     "xvfb",
@@ -24,17 +26,30 @@ aptPkgs = [
 
 [phases.build]
 cmds = [
+    # Create necessary directories
+    "mkdir -p /usr/local/bin",
+    "mkdir -p /usr/bin",
+    
+    # Set up Chrome
     "ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome",
+    "chmod +x /usr/bin/chromium-browser",
+    "chromium-browser --version || true",
+    
+    # Set up ChromeDriver
     "ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver",
     "chmod +x /usr/bin/chromedriver",
-    "chmod +x /usr/bin/chromium-browser",
     "chmod +x /usr/local/bin/chromedriver",
-    "which chromedriver",
-    "chromedriver --version"
+    "which chromedriver || true",
+    "chromedriver --version || true",
+    
+    # Verify installations
+    "ls -la /usr/bin/chromium-browser",
+    "ls -la /usr/local/bin/chromedriver"
 ]
 
 [variables]
 RAILWAY_ENVIRONMENT = "true"
 PYTHONUNBUFFERED = "1"
 CHROME_DRIVER_PATH = "/usr/local/bin/chromedriver"
-CHROME_BINARY_PATH = "/usr/bin/chromium-browser" 
+CHROME_BINARY_PATH = "/usr/bin/chromium-browser"
+DISPLAY = ":99" 
