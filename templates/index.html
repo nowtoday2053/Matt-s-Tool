@@ -279,9 +279,24 @@
                 // Add details
                 if (!result.error) {
                     html += '<div class="details">';
-                    for (const [key, value] of Object.entries(result)) {
-                        if (key !== 'phone' && key !== 'error' && value) {  // Skip phone (already shown) and empty values
-                            html += `<div><strong>${key.charAt(0).toUpperCase() + key.slice(1)}:</strong> ${value}</div>`;
+                    const displayOrder = ['type', 'company', 'location', 'date', 'is_mobile', 'carrier', 'sms_gateway'];
+                    const displayNames = {
+                        'type': 'Line Type',
+                        'company': 'Company',
+                        'location': 'Location',
+                        'date': 'Date',
+                        'is_mobile': 'Is Mobile',
+                        'carrier': 'Carrier',
+                        'sms_gateway': 'SMS Gateway'
+                    };
+                    
+                    for (const key of displayOrder) {
+                        if (key in result && result[key] !== undefined) {
+                            let value = result[key];
+                            if (key === 'is_mobile') {
+                                value = value ? 'Yes' : 'No';
+                            }
+                            html += `<div><strong>${displayNames[key]}:</strong> ${value}</div>`;
                         }
                     }
                     html += '</div>';

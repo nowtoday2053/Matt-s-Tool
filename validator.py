@@ -18,6 +18,20 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# SMS Gateway mappings for major carriers
+CARRIER_SMS_GATEWAYS = {
+    'VERIZON WIRELESS': 'vtext.com',
+    'T-MOBILE': 'tmomail.net',
+    'AT&T': 'txt.att.net',
+    'SPRINT': 'messaging.sprintpcs.com',
+    'BOOST MOBILE': 'sms.myboostmobile.com',
+    'CRICKET': 'sms.cricketwireless.net',
+    'METRO PCS': 'mymetropcs.com',
+    'TRACFONE': 'mmst5.tracfone.com',
+    'US CELLULAR': 'email.uscc.net',
+    'VIRGIN MOBILE': 'vmobl.com'
+}
+
 class PhoneValidator:
     def __init__(self):
         self.results_dir = "results"
@@ -107,6 +121,30 @@ class PhoneValidator:
             logger.error(f"Failed to initialize Chrome driver: {e}")
             raise
 
+    def _is_mobile(self, line_type):
+        """Determine if the phone is a mobile number based on line type"""
+        mobile_indicators = ['CELL', 'MOBILE', 'WIRELESS']
+        return any(indicator in line_type.upper() for indicator in mobile_indicators)
+
+    def _get_sms_gateway(self, carrier):
+        """Get the SMS gateway for a given carrier"""
+        if not carrier:
+            return ''
+        
+        # Clean and standardize carrier name
+        carrier = carrier.upper().strip()
+        
+        # Direct lookup
+        if carrier in CARRIER_SMS_GATEWAYS:
+            return CARRIER_SMS_GATEWAYS[carrier]
+        
+        # Partial matching for carrier names that might not match exactly
+        for known_carrier, gateway in CARRIER_SMS_GATEWAYS.items():
+            if known_carrier in carrier or carrier in known_carrier:
+                return gateway
+        
+        return ''
+
     def validate_file(self, file_path, phone_column=None, result_callback=None):
         """
         Validate phone numbers from a CSV or Excel file
@@ -163,6 +201,9 @@ class PhoneValidator:
                             'type': '',
                             'company': '',
                             'location': '',
+                            'is_mobile': False,
+                            'carrier': '',
+                            'sms_gateway': '',
                             'error': 'Empty or invalid phone number'
                         }
                     else:
@@ -175,6 +216,9 @@ class PhoneValidator:
                                 'type': '',
                                 'company': '',
                                 'location': '',
+                                'is_mobile': False,
+                                'carrier': '',
+                                'sms_gateway': '',
                                 'error': 'Empty or invalid phone number'
                             }
                         else:
@@ -197,6 +241,9 @@ class PhoneValidator:
                         'type': '',
                         'company': '',
                         'location': '',
+                        'is_mobile': False,
+                        'carrier': '',
+                        'sms_gateway': '',
                         'error': str(e)
                     }
                     results.append(result)
@@ -208,6 +255,10 @@ class PhoneValidator:
 
             # Create results DataFrame
             results_df = pd.DataFrame(results)
+
+            # Reorder columns to put the new fields at the end
+            column_order = ['phone', 'date', 'type', 'company', 'location', 'is_mobile', 'carrier', 'sms_gateway', 'error']
+            results_df = results_df[column_order]
 
             # Generate output filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -233,6 +284,9 @@ class PhoneValidator:
                 'type': '',
                 'company': '',
                 'location': '',
+                'is_mobile': False,
+                'carrier': '',
+                'sms_gateway': '',
                 'error': 'Empty or invalid phone number'
             }
 
@@ -325,6 +379,9 @@ class PhoneValidator:
                 'type': '',
                 'company': '',
                 'location': '',
+                'is_mobile': False,
+                'carrier': '',
+                'sms_gateway': '',
                 'error': ''
             }
 
@@ -345,6 +402,11 @@ class PhoneValidator:
                 location_element = wait.until(EC.presence_of_element_located((By.XPATH, "//li[strong[contains(text(), 'Phone Location:')]]/span")))
                 result['location'] = location_element.text.strip()
                 
+                # Add new fields
+                result['is_mobile'] = self._is_mobile(result['type'])
+                result['carrier'] = result['company']
+                result['sms_gateway'] = self._get_sms_gateway(result['company'])
+                
                 logger.info(f"Successfully retrieved results for {phone}")
                 return result
                 
@@ -361,6 +423,9 @@ class PhoneValidator:
                 'type': '',
                 'company': '',
                 'location': '',
+                'is_mobile': False,
+                'carrier': '',
+                'sms_gateway': '',
                 'error': str(e)
             }
         finally:
