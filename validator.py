@@ -126,7 +126,7 @@ class PhoneValidator:
         mobile_indicators = ['CELL', 'MOBILE', 'WIRELESS']
         return any(indicator in line_type.upper() for indicator in mobile_indicators)
 
-    def _get_sms_gateway(self, carrier):
+    def _get_sms_gateway(self, carrier, phone_number=''):
         """Get the SMS gateway for a given carrier"""
         if not carrier:
             return ''
@@ -134,15 +134,25 @@ class PhoneValidator:
         # Clean and standardize carrier name
         carrier = carrier.upper().strip()
         
+        # Clean phone number (remove any non-digit characters)
+        clean_phone = ''.join(filter(str.isdigit, str(phone_number)))
+        
         # Direct lookup
+        gateway = ''
         if carrier in CARRIER_SMS_GATEWAYS:
-            return CARRIER_SMS_GATEWAYS[carrier]
+            gateway = CARRIER_SMS_GATEWAYS[carrier]
+        else:
+            # Partial matching for carrier names that might not match exactly
+            for known_carrier, known_gateway in CARRIER_SMS_GATEWAYS.items():
+                if known_carrier in carrier or carrier in known_carrier:
+                    gateway = known_gateway
+                    break
         
-        # Partial matching for carrier names that might not match exactly
-        for known_carrier, gateway in CARRIER_SMS_GATEWAYS.items():
-            if known_carrier in carrier or carrier in known_carrier:
-                return gateway
-        
+        # Return formatted gateway if found
+        if gateway and clean_phone:
+            return f"{clean_phone}@{gateway}"
+        elif gateway:
+            return gateway
         return ''
 
     def validate_file(self, file_path, phone_column=None, result_callback=None):
@@ -405,7 +415,7 @@ class PhoneValidator:
                 # Add new fields
                 result['is_mobile'] = self._is_mobile(result['type'])
                 result['carrier'] = result['company']
-                result['sms_gateway'] = self._get_sms_gateway(result['company'])
+                result['sms_gateway'] = self._get_sms_gateway(result['company'], result['phone'])
                 
                 logger.info(f"Successfully retrieved results for {phone}")
                 return result
