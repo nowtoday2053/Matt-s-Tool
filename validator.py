@@ -1,6 +1,4 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -27,128 +25,37 @@ class PhoneValidator:
             except Exception as e:
                 logger.error(f"Failed to start Xvfb: {e}")
 
-    def _get_chrome_binary_location(self):
-        """Get the Chrome binary location based on the operating system"""
-        # First check environment variable
-        chrome_binary = os.environ.get('CHROME_BINARY_PATH')
-        if chrome_binary and os.path.exists(chrome_binary):
-            logger.info(f"Using Chrome binary from environment: {chrome_binary}")
-            return chrome_binary
+    def _get_driver(self):
+        """Get an undetected Chrome driver instance"""
+        options = uc.ChromeOptions()
+        options.headless = True  # Change to False if you want to see the browser
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--disable-gpu')
+        
+        if os.environ.get('RAILWAY_ENVIRONMENT'):
+            options.add_argument('--disable-software-rasterizer')
+            options.add_argument('--disable-features=VizDisplayCompositor')
+            options.add_argument('--single-process')
 
-        system = platform.system().lower()
-        if system == "windows":
-            possible_paths = [
-                os.path.expandvars("%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"),
-                os.path.expandvars("%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"),
-                os.path.expandvars("%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe")
-            ]
-        else:
-            possible_paths = [
-                '/usr/bin/google-chrome',
-                '/usr/bin/chromium-browser',
-                '/usr/bin/chromium',
-                '/snap/bin/chromium'
-            ]
-
-        for path in possible_paths:
-            if os.path.exists(path):
-                logger.info(f"Found Chrome binary at: {path}")
-                return path
-
-        logger.error("Chrome binary not found in common locations")
-        return None
-
-    def _ensure_chromedriver(self):
-        """Ensure ChromeDriver is available and executable"""
         try:
-            # First check environment variable
-            chromedriver_path = os.environ.get('CHROME_DRIVER_PATH')
-            if chromedriver_path and os.path.exists(chromedriver_path):
-                logger.info(f"Using ChromeDriver from environment: {chromedriver_path}")
-                return chromedriver_path
-
-            system = platform.system().lower()
-            if system == "windows":
-                possible_paths = [
-                    os.path.join(os.getcwd(), 'chromedriver.exe'),
-                    os.path.expandvars("%ProgramFiles%\\chromedriver.exe"),
-                    os.path.expandvars("%ProgramFiles(x86)%\\chromedriver.exe")
-                ]
-            else:
-                possible_paths = [
-                    '/usr/local/bin/chromedriver',
-                    '/usr/bin/chromedriver',
-                    '/snap/bin/chromedriver'
-                ]
-            
-            for path in possible_paths:
-                if os.path.exists(path):
-                    logger.info(f"Found ChromeDriver at {path}")
-                    return path
-
-            logger.error("ChromeDriver not found in any location")
-            return None
-
+            driver = uc.Chrome(options=options)
+            logger.info("Successfully initialized undetected Chrome driver")
+            return driver
         except Exception as e:
-            logger.error(f"Error in _ensure_chromedriver: {e}")
-            return None
+            logger.error(f"Failed to initialize Chrome driver: {e}")
+            raise
 
     def validate_single_number(self, phone):
         """Validate a single phone number"""
         # Set up Xvfb if needed
         self._setup_xvfb()
 
-        # Configure Chrome options
-        chrome_options = Options()
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--disable-setuid-sandbox')
-        chrome_options.add_argument('--disable-infobars')
-        chrome_options.add_argument('--disable-notifications')
-        chrome_options.add_argument('--ignore-certificate-errors')
-        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        
-        if os.environ.get('RAILWAY_ENVIRONMENT'):
-            chrome_options.add_argument('--disable-software-rasterizer')
-            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
-            chrome_options.add_argument('--single-process')
-            
         driver = None
         try:
-            # Get Chrome binary location
-            chrome_binary = self._get_chrome_binary_location()
-            if not chrome_binary:
-                raise Exception("Could not locate Chrome binary")
-            chrome_options.binary_location = chrome_binary
-            
-            # Get ChromeDriver path
-            chromedriver_path = self._ensure_chromedriver()
-            if not chromedriver_path:
-                raise Exception("Could not locate ChromeDriver")
-            
-            service = Service(executable_path=chromedriver_path)
-            logger.info(f"Initializing Chrome with driver at {chromedriver_path} and binary at {chrome_binary}")
-            
-            # Create driver with explicit wait for initialization
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    driver = webdriver.Chrome(service=service, options=chrome_options)
-                    logger.info("Successfully initialized Chrome driver")
-                    break
-                except WebDriverException as e:
-                    if attempt < max_retries - 1:
-                        logger.warning(f"Attempt {attempt + 1} failed, retrying... Error: {e}")
-                        time.sleep(2)
-                    else:
-                        raise
-            
-            if not driver:
-                raise Exception("Failed to initialize Chrome driver after all retries")
+            # Create driver with undetected_chromedriver
+            driver = self._get_driver()
             
             # Rest of the validation code...
             wait = WebDriverWait(driver, 15)
@@ -250,23 +157,25 @@ class PhoneValidator:
                 location_element = wait.until(EC.presence_of_element_located((By.XPATH, "//li[strong[contains(text(), 'Phone Location:')]]/span")))
                 result['location'] = location_element.text.strip()
                 
-                logger.info("Successfully extracted all information")
+                logger.info(f"Successfully retrieved results for {phone}")
+                return result
+                
             except Exception as e:
-                logger.error(f"Error extracting information: {str(e)}")
-                result['error'] = f"Error extracting information: {str(e)}"
-            
-            return result
-            
+                logger.error(f"Error extracting results: {e}")
+                return result
+                
         except Exception as e:
-            logger.error(f"Error in validate_single_number: {str(e)}")
+            logger.error(f"Error in validate_single_number: {e}")
             return {
                 'phone': phone,
-                'error': f"Driver initialization error: {str(e)}"
+                'date': '',
+                'type': '',
+                'company': '',
+                'location': ''
             }
         finally:
             if driver:
                 try:
                     driver.quit()
-                    logger.info("Browser closed successfully")
                 except:
                     pass 
