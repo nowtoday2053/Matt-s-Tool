@@ -9,11 +9,19 @@ import logging
 import subprocess
 import platform
 from selenium.common.exceptions import WebDriverException
+import pandas as pd
+from datetime import datetime
+from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class PhoneValidator:
+    def __init__(self):
+        self.results_dir = "results"
+        if not os.path.exists(self.results_dir):
+            os.makedirs(self.results_dir)
+
     def _setup_xvfb(self):
         """Set up Xvfb for headless operation in Linux"""
         if platform.system().lower() != "windows" and os.environ.get('RAILWAY_ENVIRONMENT'):
@@ -45,6 +53,70 @@ class PhoneValidator:
             return driver
         except Exception as e:
             logger.error(f"Failed to initialize Chrome driver: {e}")
+            raise
+
+    def validate_file(self, file_path, phone_column=None):
+        """
+        Validate phone numbers from a CSV or Excel file
+        
+        Args:
+            file_path (str): Path to the input file (CSV or Excel)
+            phone_column (str, optional): Name of the column containing phone numbers.
+                                        If None, will try to auto-detect.
+        
+        Returns:
+            str: Path to the output file with results
+        """
+        try:
+            # Read the file
+            if file_path.lower().endswith('.csv'):
+                df = pd.read_csv(file_path)
+            elif file_path.lower().endswith(('.xls', '.xlsx')):
+                df = pd.read_excel(file_path)
+            else:
+                raise ValueError("Unsupported file format. Please use CSV or Excel file.")
+
+            # Auto-detect phone column if not specified
+            if phone_column is None:
+                possible_columns = ['phone', 'phone_number', 'phonenumber', 'number', 'contact', 'mobile']
+                for col in possible_columns:
+                    if col in df.columns.str.lower():
+                        phone_column = df.columns[df.columns.str.lower() == col][0]
+                        break
+                
+                if phone_column is None:
+                    phone_column = df.columns[0]  # Use first column as fallback
+                    logger.warning(f"No phone column detected, using first column: {phone_column}")
+                else:
+                    logger.info(f"Auto-detected phone column: {phone_column}")
+
+            # Create results list
+            results = []
+            
+            # Process each phone number with progress bar
+            logger.info(f"Processing {len(df)} phone numbers...")
+            for _, row in tqdm(df.iterrows(), total=len(df), desc="Validating phone numbers"):
+                phone = str(row[phone_column]).strip()
+                result = self.validate_single_number(phone)
+                results.append(result)
+                time.sleep(1)  # Add delay between requests
+
+            # Create results DataFrame
+            results_df = pd.DataFrame(results)
+
+            # Generate output filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"validated_numbers_{timestamp}.csv"
+            output_path = os.path.join(self.results_dir, output_filename)
+
+            # Save results
+            results_df.to_csv(output_path, index=False)
+            logger.info(f"Results saved to: {output_path}")
+            
+            return output_path
+
+        except Exception as e:
+            logger.error(f"Error processing file: {e}")
             raise
 
     def validate_single_number(self, phone):
