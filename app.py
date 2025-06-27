@@ -1,8 +1,12 @@
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 import os
 from validator import PhoneValidator
 import logging
 from werkzeug.utils import secure_filename
+import json
+import queue
+import threading
+import time
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -18,7 +22,11 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs('results', exist_ok=True)
 
+# Create a validator instance
 validator = PhoneValidator()
+
+# Queue for real-time results
+results_queues = {}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -40,6 +48,34 @@ def validate():
         logger.error(f"Error in validation: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+def process_file(file_path, phone_column, session_id):
+    try:
+        def result_callback(result):
+            # Put each result in the queue
+            if session_id in results_queues:
+                results_queues[session_id].put(result)
+
+        # Process the file with callback
+        output_path = validator.validate_file(file_path, phone_column, result_callback)
+        
+        # Signal completion
+        if session_id in results_queues:
+            results_queues[session_id].put({
+                'status': 'complete',
+                'output_file': os.path.basename(output_path)
+            })
+    except Exception as e:
+        logger.error(f"Error processing file: {str(e)}")
+        if session_id in results_queues:
+            results_queues[session_id].put({
+                'status': 'error',
+                'error': str(e)
+            })
+    finally:
+        # Clean up the uploaded file
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 @app.route('/validate-file', methods=['POST'])
 def validate_file():
     try:
@@ -54,6 +90,12 @@ def validate_file():
         if not allowed_file(file.filename):
             return jsonify({'error': 'Invalid file type. Please upload a CSV or Excel file'}), 400
 
+        # Generate a unique session ID
+        session_id = str(hash(file.filename + str(time.time())))
+        
+        # Create a new queue for this session
+        results_queues[session_id] = queue.Queue()
+
         # Save the uploaded file
         filename = secure_filename(file.filename)
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -62,24 +104,48 @@ def validate_file():
         # Get the phone column name if specified
         phone_column = request.form.get('phone_column')
         
-        # Process the file
-        try:
-            output_path = validator.validate_file(file_path, phone_column)
-            
-            # Return the path to download results
-            return jsonify({
-                'success': True,
-                'message': 'File processed successfully',
-                'result_file': os.path.basename(output_path)
-            })
-        finally:
-            # Clean up the uploaded file
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                
+        # Start processing in a separate thread
+        thread = threading.Thread(
+            target=process_file,
+            args=(file_path, phone_column, session_id)
+        )
+        thread.start()
+
+        return jsonify({
+            'session_id': session_id,
+            'message': 'File upload successful, processing started'
+        })
+
     except Exception as e:
-        logger.error(f"Error processing file: {str(e)}")
+        logger.error(f"Error in validate_file: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/stream-results/<session_id>')
+def stream_results(session_id):
+    def generate():
+        if session_id not in results_queues:
+            yield f"data: {json.dumps({'error': 'Invalid session ID'})}\n\n"
+            return
+
+        q = results_queues[session_id]
+        try:
+            while True:
+                try:
+                    result = q.get(timeout=30)  # 30 second timeout
+                    yield f"data: {json.dumps(result)}\n\n"
+                    
+                    # If processing is complete, break the loop
+                    if isinstance(result, dict) and result.get('status') in ['complete', 'error']:
+                        break
+                except queue.Empty:
+                    # Timeout occurred, send keepalive
+                    yield f"data: {json.dumps({'status': 'processing'})}\n\n"
+        finally:
+            # Clean up the queue
+            if session_id in results_queues:
+                del results_queues[session_id]
+
+    return Response(generate(), mimetype='text/event-stream')
 
 @app.route('/download/<filename>')
 def download_file(filename):

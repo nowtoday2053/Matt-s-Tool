@@ -12,6 +12,8 @@ from selenium.common.exceptions import WebDriverException
 import pandas as pd
 from datetime import datetime
 from tqdm import tqdm
+import numpy as np
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,29 +35,79 @@ class PhoneValidator:
             except Exception as e:
                 logger.error(f"Failed to start Xvfb: {e}")
 
+    def _get_chrome_version(self):
+        """Get the installed Chrome version"""
+        try:
+            system = platform.system().lower()
+            if system == "windows":
+                import winreg
+                # Check both HKLM and HKCU
+                reg_paths = [
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome"),
+                    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Google\Chrome\BLBeacon")
+                ]
+                
+                for reg_key, reg_path in reg_paths:
+                    try:
+                        with winreg.OpenKey(reg_key, reg_path) as key:
+                            version = winreg.QueryValueEx(key, "version")[0]
+                            logger.info(f"Detected Chrome version: {version}")
+                            return version.split('.')[0]  # Return major version
+                    except WindowsError:
+                        continue
+            
+            # For non-Windows systems or if registry method fails
+            import subprocess
+            if system == "darwin":  # macOS
+                process = subprocess.Popen(['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--version'], stdout=subprocess.PIPE)
+            else:  # Linux
+                process = subprocess.Popen(['google-chrome', '--version'], stdout=subprocess.PIPE)
+            
+            output = process.communicate()[0].decode('utf-8')
+            version = re.search(r'Chrome\s+(\d+)', output)
+            if version:
+                logger.info(f"Detected Chrome version: {version.group(1)}")
+                return version.group(1)
+            
+        except Exception as e:
+            logger.warning(f"Could not detect Chrome version: {e}")
+        
+        return None
+
     def _get_driver(self):
         """Get an undetected Chrome driver instance"""
-        options = uc.ChromeOptions()
-        options.headless = True  # Change to False if you want to see the browser
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--disable-gpu')
-        
-        if os.environ.get('RAILWAY_ENVIRONMENT'):
-            options.add_argument('--disable-software-rasterizer')
-            options.add_argument('--disable-features=VizDisplayCompositor')
-            options.add_argument('--single-process')
-
         try:
-            driver = uc.Chrome(options=options)
+            # Get Chrome version
+            chrome_version = self._get_chrome_version()
+            
+            options = uc.ChromeOptions()
+            options.headless = True  # Change to False if you want to see the browser
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument('--window-size=1920,1080')
+            options.add_argument('--disable-gpu')
+            
+            if os.environ.get('RAILWAY_ENVIRONMENT'):
+                options.add_argument('--disable-software-rasterizer')
+                options.add_argument('--disable-features=VizDisplayCompositor')
+                options.add_argument('--single-process')
+
+            # Initialize driver with version if detected
+            if chrome_version:
+                driver = uc.Chrome(options=options, version_main=int(chrome_version))
+            else:
+                # Fallback to automatic version detection
+                driver = uc.Chrome(options=options)
+            
             logger.info("Successfully initialized undetected Chrome driver")
             return driver
+            
         except Exception as e:
             logger.error(f"Failed to initialize Chrome driver: {e}")
             raise
 
-    def validate_file(self, file_path, phone_column=None):
+    def validate_file(self, file_path, phone_column=None, result_callback=None):
         """
         Validate phone numbers from a CSV or Excel file
         
@@ -63,6 +115,7 @@ class PhoneValidator:
             file_path (str): Path to the input file (CSV or Excel)
             phone_column (str, optional): Name of the column containing phone numbers.
                                         If None, will try to auto-detect.
+            result_callback (callable, optional): Callback function to receive results in real-time
         
         Returns:
             str: Path to the output file with results
@@ -76,15 +129,19 @@ class PhoneValidator:
             else:
                 raise ValueError("Unsupported file format. Please use CSV or Excel file.")
 
+            if df.empty:
+                raise ValueError("The uploaded file is empty")
+
             # Auto-detect phone column if not specified
-            if phone_column is None:
+            if phone_column is None or phone_column not in df.columns:
                 possible_columns = ['phone', 'phone_number', 'phonenumber', 'number', 'contact', 'mobile']
                 for col in possible_columns:
-                    if col in df.columns.str.lower():
-                        phone_column = df.columns[df.columns.str.lower() == col][0]
+                    matching_cols = df.columns[df.columns.str.lower() == col]
+                    if not matching_cols.empty:
+                        phone_column = matching_cols[0]
                         break
                 
-                if phone_column is None:
+                if phone_column is None or phone_column not in df.columns:
                     phone_column = df.columns[0]  # Use first column as fallback
                     logger.warning(f"No phone column detected, using first column: {phone_column}")
                 else:
@@ -96,10 +153,58 @@ class PhoneValidator:
             # Process each phone number with progress bar
             logger.info(f"Processing {len(df)} phone numbers...")
             for _, row in tqdm(df.iterrows(), total=len(df), desc="Validating phone numbers"):
-                phone = str(row[phone_column]).strip()
-                result = self.validate_single_number(phone)
-                results.append(result)
-                time.sleep(1)  # Add delay between requests
+                try:
+                    # Handle missing or invalid values
+                    phone = row[phone_column]
+                    if pd.isna(phone) or phone == '' or not str(phone).strip():
+                        result = {
+                            'phone': 'Invalid/Empty',
+                            'date': '',
+                            'type': '',
+                            'company': '',
+                            'location': '',
+                            'error': 'Empty or invalid phone number'
+                        }
+                    else:
+                        # Clean and validate the phone number
+                        phone = str(phone).strip()
+                        if not phone:
+                            result = {
+                                'phone': 'Invalid/Empty',
+                                'date': '',
+                                'type': '',
+                                'company': '',
+                                'location': '',
+                                'error': 'Empty or invalid phone number'
+                            }
+                        else:
+                            result = self.validate_single_number(phone)
+                    
+                    # Add result to list
+                    results.append(result)
+                    
+                    # Call callback if provided
+                    if result_callback:
+                        result_callback(result)
+                    
+                    time.sleep(1)  # Add delay between requests
+                    
+                except Exception as e:
+                    logger.error(f"Error processing phone number {phone}: {str(e)}")
+                    result = {
+                        'phone': phone if 'phone' in locals() else 'Unknown',
+                        'date': '',
+                        'type': '',
+                        'company': '',
+                        'location': '',
+                        'error': str(e)
+                    }
+                    results.append(result)
+                    if result_callback:
+                        result_callback(result)
+
+            if not results:
+                raise ValueError("No valid results were generated")
 
             # Create results DataFrame
             results_df = pd.DataFrame(results)
@@ -116,11 +221,21 @@ class PhoneValidator:
             return output_path
 
         except Exception as e:
-            logger.error(f"Error processing file: {e}")
+            logger.error(f"Error processing file: {str(e)}")
             raise
 
     def validate_single_number(self, phone):
         """Validate a single phone number"""
+        if not phone or not str(phone).strip():
+            return {
+                'phone': 'Invalid/Empty',
+                'date': '',
+                'type': '',
+                'company': '',
+                'location': '',
+                'error': 'Empty or invalid phone number'
+            }
+
         # Set up Xvfb if needed
         self._setup_xvfb()
 
@@ -209,7 +324,8 @@ class PhoneValidator:
                 'date': '',
                 'type': '',
                 'company': '',
-                'location': ''
+                'location': '',
+                'error': ''
             }
 
             # Get results with better error handling
@@ -233,17 +349,19 @@ class PhoneValidator:
                 return result
                 
             except Exception as e:
-                logger.error(f"Error extracting results: {e}")
+                logger.error(f"Error extracting results for {phone}: {str(e)}")
+                result['error'] = f"Error extracting results: {str(e)}"
                 return result
                 
         except Exception as e:
-            logger.error(f"Error in validate_single_number: {e}")
+            logger.error(f"Error in validate_single_number for {phone}: {str(e)}")
             return {
                 'phone': phone,
                 'date': '',
                 'type': '',
                 'company': '',
-                'location': ''
+                'location': '',
+                'error': str(e)
             }
         finally:
             if driver:
